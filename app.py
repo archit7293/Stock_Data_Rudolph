@@ -59,7 +59,7 @@ def pull_stock_data(progress_bar, status_text):
                 status_text.text(f"Max retries exceeded for {symbol}. Skipping.")
             time.sleep(symbol_sleep_time)
             processed_stocks += 1
-            progress_bar.progress(10 + int((processed_stocks / total_stocks) * 80)  # Update progress bar
+            progress_bar.progress(10 + int((processed_stocks / total_stocks) * 80))  # Update progress bar
 
         status_text.text(f"Processed chunk {chunk_index}. Sleeping for {sleep_time} seconds...")
         time.sleep(sleep_time)
