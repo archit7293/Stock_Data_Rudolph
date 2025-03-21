@@ -195,6 +195,7 @@ def get_stock_kpis(stock_symbol, benchmark_symbol="^GSPC"):
 def process_data(api_key):
     """Main function to fetch data, calculate KPIs, and save the results."""
     # --- STEP 1: Filter Stock Data ---
+    st.write("Fetching filtered stock data from FMP...") # Display a start message
     df, error_message = get_filtered_stock_data(api_key)
 
     if error_message:
@@ -208,9 +209,9 @@ def process_data(api_key):
     stock_symbols = df['symbol']
     total_stocks = len(stock_symbols)
     all_kpis = {}
-    chunk_size = 50
-    sleep_time = 30  # Wait (seconds) between chunks
-    symbol_sleep_time = 2  # Wait (seconds) between symbols
+    chunk_size = 5  # Reduce Chunk Size
+    sleep_time = 600 # 10 mins sleep between chunks - increased
+    symbol_sleep_time = 5 # 5 sec sleep between symbols - increased
     max_retries = 3
     processed_stocks_count = 0 # Track processed stocks
 
@@ -220,8 +221,12 @@ def process_data(api_key):
             all_kpis = json.load(f)
         processed_symbols = set(all_kpis.keys())
         processed_stocks_count = len(processed_symbols)  #Update count if resuming
+        st.write(f"Resuming from a previous run. Processed {processed_stocks_count} of {total_stocks} stocks.")
     except FileNotFoundError:
+        all_kpis = {} # start an empty dictionary if first run
         processed_symbols = set()
+        processed_stocks_count = 0
+        st.write("Starting a new analysis.")
 
 
     total_chunks = (len(stock_symbols) + chunk_size - 1) // chunk_size
@@ -231,38 +236,48 @@ def process_data(api_key):
 
     # Set initial progress (STEP 1)
     progress_bar.progress(10)
+    st.write("Filtered stock data fetched.  Starting KPI calculations.")
 
     for chunk_index, i in enumerate(range(0, len(stock_symbols), chunk_size), start=1):
         chunk = stock_symbols[i:i + chunk_size]
         for symbol in chunk:
             if symbol in processed_symbols:
                 status_text.text(f"Skipping already processed symbol: {symbol}")
+                st.write(f"Skipping {symbol} (already processed).")
                 continue
 
-            status_text.text(f"Processing {symbol}...")
+            st.write(f"Processing {symbol}...")
             retries = 0
             while retries < max_retries:
                 try:
                     kpis = get_stock_kpis(symbol)
                     if kpis:
                         all_kpis[symbol] = kpis
+                        st.write(f"Successfully processed {symbol}.")
+                        with open("stock_kpis_partial.json", "w") as f: # Save after each symbol
+                            json.dump(all_kpis, f, indent=4)
                     else:
                         status_text.text(f"No data returned for {symbol}")
+                        st.write(f"No data returned for {symbol}.")
                     break  # Exit the retry loop if successful
                 except Exception as e:
                     error_message = str(e).lower()
                     status_text.text(f"Error processing {symbol}: {e}")
+                    st.write(f"Error processing {symbol}: {e}")
+
                     if "rate limit" in error_message or "too many requests" in error_message:
                         wait_time = 60 * (retries + 1)  # Exponential backoff
-                        status_text.text(f"Rate limit encountered. Sleeping for {wait_time} seconds...")
+                        st.write(f"Rate limit encountered. Sleeping for {wait_time} seconds...")
                         time.sleep(wait_time)
                         retries += 1
                     else:
                         # For other types of errors, you may choose to skip or handle differently
-                        status_text.text(f"Non-rate limit error for {symbol}. Skipping.")
+                        st.write(f"Non-rate limit error for {symbol}. Skipping.")
                         break
             else:
                 status_text.text(f"Max retries exceeded for {symbol}. Skipping.")
+                st.write(f"Max retries exceeded for {symbol}.  Skipping.")
+
             time.sleep(symbol_sleep_time)  # Wait between symbols
             processed_stocks_count += 1 # Increment counter
 
@@ -272,11 +287,11 @@ def process_data(api_key):
 
 
         status_text.text(f"Processed chunk {chunk_index} of {total_chunks}")
-        # Save the results after each chunk
+        st.write(f"Processed chunk {chunk_index} of {total_chunks}.") # Keep chunk messages
+        # Save the results after each chunk (redundant, but for safety)
         with open("stock_kpis_partial.json", "w") as f:
             json.dump(all_kpis, f, indent=4)
-
-        status_text.text(f"Saved progress after chunk {chunk_index}")
+        st.write(f"Saved progress after chunk {chunk_index}")
         time.sleep(sleep_time)  # Wait before processing the next chunk
 
 
@@ -287,7 +302,7 @@ def process_data(api_key):
     # Update progress bar (STEP 3 - JSON to DataFrame)
     progress_bar.progress(90)
     status_text.text("Converting JSON to DataFrame...")
-
+    st.write("Converting JSON to DataFrame...")
 
     # --- STEP 3: JSON to DataFrame and CSV ---
     try:
@@ -298,6 +313,7 @@ def process_data(api_key):
         stock_kpis_df = stock_kpis_df.reset_index()
         stock_kpis_df = stock_kpis_df.rename(columns={"index": "stock"})
         stock_kpis_df.to_csv('stock_kpis.csv', index=False)
+        st.write("JSON to DataFrame conversion complete.")
     except Exception as e:
         st.error(f"Error processing JSON to DataFrame: {e}")
         return None
@@ -305,6 +321,7 @@ def process_data(api_key):
     # Update progress bar (STEP 4 - Ranking)
     progress_bar.progress(92)
     status_text.text("Ranking stocks...")
+    st.write("Ranking stocks...")
 
     # --- STEP 4: Ranking Algo ---
     try:
@@ -369,6 +386,7 @@ def process_data(api_key):
         df = df.sort_values(by="rank")
 
         df.to_csv("ranked_stocks_median.csv", index=False)
+        st.write("Ranking complete.")
     except Exception as e:
         st.error(f"Error during ranking: {e}")
         return None
@@ -376,6 +394,7 @@ def process_data(api_key):
     # Update progress bar and download (STEP 5)
     progress_bar.progress(95)
     status_text.text("Saving and downloading final results...")
+    st.write("Saving and downloading final results...")
     with open("ranked_stocks_median.csv", "r") as f:
         ranked_data = f.read()
 
