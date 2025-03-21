@@ -206,24 +206,31 @@ def process_data(api_key):
         return None
 
     stock_symbols = df['symbol']
+    total_stocks = len(stock_symbols)
     all_kpis = {}
     chunk_size = 50
     sleep_time = 30  # Wait (seconds) between chunks
     symbol_sleep_time = 2  # Wait (seconds) between symbols
     max_retries = 3
+    processed_stocks_count = 0 # Track processed stocks
 
     # Load existing data if resuming from a previous run
     try:
         with open("stock_kpis_partial.json", "r") as f:
             all_kpis = json.load(f)
         processed_symbols = set(all_kpis.keys())
+        processed_stocks_count = len(processed_symbols)  #Update count if resuming
     except FileNotFoundError:
         processed_symbols = set()
+
 
     total_chunks = (len(stock_symbols) + chunk_size - 1) // chunk_size
 
     progress_bar = st.progress(0)  # Initialize progress bar
     status_text = st.empty()  # For displaying status messages
+
+    # Set initial progress (STEP 1)
+    progress_bar.progress(10)
 
     for chunk_index, i in enumerate(range(0, len(stock_symbols), chunk_size), start=1):
         chunk = stock_symbols[i:i + chunk_size]
@@ -257,9 +264,13 @@ def process_data(api_key):
             else:
                 status_text.text(f"Max retries exceeded for {symbol}. Skipping.")
             time.sleep(symbol_sleep_time)  # Wait between symbols
+            processed_stocks_count += 1 # Increment counter
 
-        progress = chunk_index / total_chunks
-        progress_bar.progress(progress)
+            # Update progress bar (STEP 2)
+            progress = 10 + int((processed_stocks_count / total_stocks) * 80)
+            progress_bar.progress(progress)
+
+
         status_text.text(f"Processed chunk {chunk_index} of {total_chunks}")
         # Save the results after each chunk
         with open("stock_kpis_partial.json", "w") as f:
@@ -273,26 +284,117 @@ def process_data(api_key):
     with open("stock_kpis.json", "w") as f:
         json.dump(all_kpis, f, indent=4)
 
-    progress_bar.progress(1.0)  # Complete progress bar
-    status_text.text("KPI data saved to stock_kpis.json")
+    # Update progress bar (STEP 3 - JSON to DataFrame)
+    progress_bar.progress(90)
+    status_text.text("Converting JSON to DataFrame...")
 
-    return "stock_kpis.json"  # Return the filename for download
+
+    # --- STEP 3: JSON to DataFrame and CSV ---
+    try:
+        with open("stock_kpis.json", "r") as f:
+            stock_kpis_data = json.load(f)
+
+        stock_kpis_df = pd.DataFrame(stock_kpis_data).T
+        stock_kpis_df = stock_kpis_df.reset_index()
+        stock_kpis_df = stock_kpis_df.rename(columns={"index": "stock"})
+        stock_kpis_df.to_csv('stock_kpis.csv', index=False)
+    except Exception as e:
+        st.error(f"Error processing JSON to DataFrame: {e}")
+        return None
+
+    # Update progress bar (STEP 4 - Ranking)
+    progress_bar.progress(92)
+    status_text.text("Ranking stocks...")
+
+    # --- STEP 4: Ranking Algo ---
+    try:
+        df = pd.read_csv('stock_kpis.csv')
+
+        # Replace NA with median for growth-related metrics
+        growth_columns = [
+            "revenue_growth",  # 3-year revenue growth
+            "eps_growth",      # 3-year EPS growth
+            "cag",            # Current Annual Growth
+        ]
+        for col in growth_columns:
+            df[col].fillna(df[col].median(), inplace=True)
+
+        # Replace NA with median for absolute metrics
+        absolute_columns = [
+            "free_cash_flow",          # Free Cash Flow (latest year)
+            "fcfps",                  # Free Cash Flow Per Share
+            "free_cash_flow_yield",   # Free Cash Flow Yield
+            "roe",                    # Return on Equity
+            "pe_ratio",               # PE Ratio
+            "peg_ratio",              # PEG Ratio
+            "relative_strength",      # Relative Strength
+        ]
+        for col in absolute_columns:
+            df[col].fillna(df[col].median(), inplace=True)
+
+        # Weights for each variable
+        weights = {
+            "revenue_growth": 0.20,
+            "eps_growth": 0.20,
+            "free_cash_flow": 0.15,
+            "free_cash_flow_yield": 0.20,
+            "roe": 0.10,
+            "peg_ratio": 0.10,
+            "relative_strength": 0.05,
+        }
+
+        # Normalize the data (scale to 0-1)
+        def normalize(series):
+            return (series - series.min()) / (series.max() - series.min())
+
+        # Apply normalization to each variable
+        for column in weights.keys():
+            df[column + "_normalized"] = normalize(df[column])
+
+        # Calculate weighted score
+        df["weighted_score"] = (
+            df["revenue_growth_normalized"] * weights["revenue_growth"]
+            + df["eps_growth_normalized"] * weights["eps_growth"]
+            + df["free_cash_flow_normalized"] * weights["free_cash_flow"]
+            + df["free_cash_flow_yield_normalized"] * weights["free_cash_flow_yield"]
+            + df["roe_normalized"] * weights["roe"]
+            + df["peg_ratio_normalized"] * weights["peg_ratio"]
+            + df["relative_strength_normalized"] * weights["relative_strength"]
+        )
+
+        # Rank companies based on weighted score
+        df["rank"] = df["weighted_score"].rank(ascending=False)
+
+        # Sort by rank
+        df = df.sort_values(by="rank")
+
+        df.to_csv("ranked_stocks_median.csv", index=False)
+    except Exception as e:
+        st.error(f"Error during ranking: {e}")
+        return None
+
+    # Update progress bar and download (STEP 5)
+    progress_bar.progress(95)
+    status_text.text("Saving and downloading final results...")
+    with open("ranked_stocks_median.csv", "r") as f:
+        ranked_data = f.read()
+
+    progress_bar.progress(100)
+    st.success("Analysis complete!")
+    st.download_button(
+        label="Download Ranked Stocks (ranked_stocks_median.csv)",
+        data=ranked_data,
+        file_name="ranked_stocks_median.csv",
+        mime="text/csv"
+    )
+
+    return "ranked_stocks_median.csv"  # Return the filename for download
 
 
 # --- START BUTTON and DATA PROCESSING ---
-if st.button("Start Data Pull"):
+if st.button("Start Data Pull & Analysis"):
     if not api_key:
         st.error("Please enter your FMP API key.")
     else:
         with st.spinner("Fetching data and calculating KPIs... This may take a while."):
             download_filename = process_data(api_key)
-
-        if download_filename:
-            with open(download_filename, "r") as f:
-                data = f.read()
-            st.download_button(
-                label="Download Results (stock_kpis.json)",
-                data=data,
-                file_name="stock_kpis.json",
-                mime="application/json"
-            )
